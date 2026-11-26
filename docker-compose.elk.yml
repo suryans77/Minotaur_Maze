@@ -1,0 +1,163 @@
+# ELK stack for Minotaur Maze (SRS FR-D-06, §2.3, §7.1, §8).
+#
+# Runs outside Minikube on the demo host. Filebeat runs inside the cluster as a
+# DaemonSet (FR-D-15) and ships to Logstash on port 5044; it is not part of this file.
+#
+# Usage: see elk/README.md. All secrets come from .env (never committed).
+#
+# All three images MUST stay on the same Elastic version.
+
+name: minotaur-elk
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.26
+    container_name: minotaur-elasticsearch
+    environment:
+      node.name: es01
+      cluster.name: minotaur-elk
+      discovery.type: single-node
+      # FR-D-06: security on, plain HTTP on localhost, no certificate work.
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      # SRS §7.1: 1 GB heap inside a 1.5 GB allocation.
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+      # Bootstrap password for the built-in `elastic` superuser. Only applied
+      # when the data volume is first initialised.
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD must be set in .env}
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    ports:
+      - "127.0.0.1:9200:9200"
+    networks:
+      - elk
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
+    healthcheck:
+      # Authenticated cluster health: proves security is on and the node answers.
+      # Yellow is expected on a single node (replica shards cannot be assigned).
+      # The credentials reach curl as a config file on stdin (`-K -`), written by
+      # the shell's printf builtin, so the password is never in a process argv.
+      test:
+        - CMD-SHELL
+        - >-
+          printf 'user = "elastic:%s"\n' "$${ELASTIC_PASSWORD}"
+          | curl -fsS -K -
+          "http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s"
+          | grep -Eq '"status":"(green|yellow)"'
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
+  # One-shot job: sets the kibana_system password and creates the least-privilege
+  # Logstash writer. Idempotent; safe to re-run on every `up`.
+  setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.26
+    container_name: minotaur-elk-setup
+    command: ["bash", "/usr/local/bin/elk-setup.sh"]
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD must be set in .env}
+      KIBANA_SYSTEM_PASSWORD: ${KIBANA_SYSTEM_PASSWORD:?KIBANA_SYSTEM_PASSWORD must be set in .env}
+      LOGSTASH_INTERNAL_PASSWORD: ${LOGSTASH_INTERNAL_PASSWORD:?LOGSTASH_INTERNAL_PASSWORD must be set in .env}
+    volumes:
+      - ./elk/setup/setup.sh:/usr/local/bin/elk-setup.sh:ro
+    networks:
+      - elk
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: "no"
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.19.26
+    container_name: minotaur-logstash
+    environment:
+      # SRS §7.1: 512 MB heap inside a 0.8 GB allocation.
+      LS_JAVA_OPTS: -Xms512m -Xmx512m
+      # Referenced from the pipeline as ${LOGSTASH_INTERNAL_PASSWORD}.
+      LOGSTASH_INTERNAL_PASSWORD: ${LOGSTASH_INTERNAL_PASSWORD:?LOGSTASH_INTERNAL_PASSWORD must be set in .env}
+    volumes:
+      - ./elk/logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./elk/logstash/pipeline:/usr/share/logstash/pipeline:ro
+    ports:
+      # Beats input for the in-cluster Filebeat DaemonSet. Localhost only, never
+      # 0.0.0.0: the Beats input has no authentication. See elk/README.md for how
+      # pods are expected to reach it.
+      - "127.0.0.1:5044:5044"
+    networks:
+      - elk
+    deploy:
+      resources:
+        limits:
+          memory: 800m
+    healthcheck:
+      # Logstash health report (8.14+): green/yellow means the pipeline is running.
+      test:
+        - CMD-SHELL
+        - curl -fsS http://localhost:9600/_health_report | grep -Eq '"status":"(green|yellow)"'
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.19.26
+    container_name: minotaur-kibana
+    environment:
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+      # Kibana 8 refuses the `elastic` superuser; it uses the built-in
+      # kibana_system user, whose password the setup job sets.
+      ELASTICSEARCH_USERNAME: kibana_system
+      ELASTICSEARCH_PASSWORD: ${KIBANA_SYSTEM_PASSWORD:?KIBANA_SYSTEM_PASSWORD must be set in .env}
+      # Required for alerting rules (SRS §8.3) and other encrypted saved objects.
+      XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY: ${KIBANA_ENCRYPTION_KEY:?KIBANA_ENCRYPTION_KEY must be set in .env}
+      # Encrypts session cookies. Without a fixed key Kibana generates a random
+      # one on each start, which logs every user out on every restart.
+      XPACK_SECURITY_ENCRYPTIONKEY: ${KIBANA_SECURITY_ENCRYPTION_KEY:?KIBANA_SECURITY_ENCRYPTION_KEY must be set in .env}
+      SERVER_PUBLICBASEURL: http://localhost:5601
+    ports:
+      - "127.0.0.1:5601:5601"
+    networks:
+      - elk
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    healthcheck:
+      # Kibana answers 503 until it is ready; once ready, `/` redirects (302)
+      # to the login page.
+      test:
+        - CMD-SHELL
+        - curl -s -o /dev/null -w '%{http_code}' http://localhost:5601/ | grep -q '^302$$'
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  esdata:
+    name: minotaur-elk-esdata
+
+networks:
+  elk:
+    name: minotaur-elk

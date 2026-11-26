@@ -1,0 +1,24 @@
+# Logstash settings for Minotaur Maze. Replaces the image's default logstash.yml.
+#
+# The monitoring API stays on the container's loopback; the Compose healthcheck
+# runs inside the container, so nothing needs to publish port 9600.
+api.http.host: "127.0.0.1"
+api.http.port: 9600
+
+# Logstash 8 default, stated explicitly so the pipeline's field handling is
+# predictable across upgrades.
+pipeline.ecs_compatibility: v8
+
+# Memory (SRS §7.1: 512 MB heap inside an 800 MB container limit).
+#
+# Workers default to one per CPU core (16 on the demo host). Idle with 16
+# workers, Logstash already used ~665 MB of its 800 MB. Two workers are ample for
+# this event volume and cut the number of in-flight batches eightfold.
+pipeline.workers: 2
+
+# Allocate Beats input buffers on the JVM heap instead of in direct memory.
+# Direct memory sits outside the 512 MB heap and, by default, may grow to roughly
+# the heap size again, which would push the container past 800 MB and get it
+# OOM-killed. On the heap, buffer growth is bounded by -Xmx. This is also the
+# Logstash 9.x default, so setting it clears the 8.x deprecation warning.
+pipeline.buffer.type: heap
