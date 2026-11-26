@@ -55,12 +55,14 @@ it holds:
 - [`../levels/maze.json`](../levels/maze.json): static topology (grid and
   exit coordinates).
 - [`../config/game.yaml`](../config/game.yaml), section `level`: the
-  tunable settings `safe_zone_radius` and `min_start_distance`.
+  tunable settings `safe_zone_radius`, `min_start_distance`,
+  `min_route_turns`, `min_route_decisions` and `start_cell_count`.
 
 `app.maze.load_level()` reads both, derives the safe zones and the valid
 start cells, and refuses the level unless every requirement holds. Nothing
 derived is stored. Exits are terminal endpoints, and every start needs two
-distinct routes (they may share cells) to each exit. The format,
+distinct routes (they may share cells) to each exit, and no straightforward
+one: every route must make enough turns and pass enough junctions. The format,
 coordinates, and every definition and check are documented in
 [`../levels/README.md`](../levels/README.md).
 

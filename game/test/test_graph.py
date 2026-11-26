@@ -150,3 +150,79 @@ def test_route_counting_agrees_with_brute_force(seed):
             assert len(built) == min(len(every), 2), (seed, source, target)
             assert all(r in every for r in built)
             assert (source in multi) == (len(every) >= 2), (seed, source, target)
+
+
+# --- route complexity: fewest turns, fewest marked nodes ------------------------------
+
+
+def grid_graph(width, height, rng, keep=0.75):
+    """A random subgraph of the width x height grid: nodes are (x, y), each
+    grid edge kept with probability ``keep``."""
+    cells = [(x, y) for y in range(height) for x in range(width)]
+    edges = [
+        (a, b)
+        for a in cells
+        for b in ((a[0] + 1, a[1]), (a[0], a[1] + 1))
+        if b[0] < width and b[1] < height and rng.random() < keep
+    ]
+    return undirected(edges, nodes=cells)
+
+
+def test_turns_counts_direction_changes():
+    assert g.turns([(0, 0), (1, 0), (2, 0)]) == 0
+    assert g.turns([(0, 0), (1, 0), (1, 1), (2, 1)]) == 2
+    assert g.turns([(0, 0), (0, 1)]) == 0
+
+
+def test_fewest_turns_prefers_a_longer_straighter_route():
+    # From (0,0) to (2,2): the staircase is shortest (4 moves, 3 turns); the
+    # route around the edge is just as short with 1 turn.
+    graph = undirected(
+        [
+            ((0, 0), (1, 0)),
+            ((1, 0), (2, 0)),
+            ((2, 0), (2, 1)),
+            ((2, 1), (2, 2)),
+            ((1, 0), (1, 1)),
+            ((1, 1), (2, 1)),
+            ((1, 1), (1, 2)),
+            ((1, 2), (2, 2)),
+        ]
+    )
+    assert g.fewest_turns(graph, (0, 0))[(2, 2)] == 1
+    assert g.fewest_turns(g.induced_subgraph(graph, [(2, 0)]), (0, 0))[(2, 2)] == 2
+
+
+def test_fewest_marked_skips_marked_nodes_when_it_can():
+    graph = undirected([("s", "a"), ("a", "t"), ("s", "b"), ("b", "c"), ("c", "t")])
+    assert g.fewest_marked(graph, "s", {"a"})["t"] == 0  # around through b, c
+    assert g.fewest_marked(graph, "s", {"a", "b"})["t"] == 1
+    assert g.fewest_marked(graph, "s", {"s", "t"})["t"] == 0  # the two ends never count
+    assert g.fewest_marked(graph, "x", {"a"}) == {}
+
+
+@pytest.mark.parametrize("seed", range(25))
+def test_complexity_measures_agree_with_brute_force(seed):
+    """Every simple path is enumerated on a small random grid graph: the
+    fewest turns and fewest marked nodes over all of them match the fast
+    searches, which minimise over walks. No path at all: absent from both."""
+    rng = random.Random(seed)
+    graph = grid_graph(4, 3, rng)
+    marked = {c for c in graph if rng.random() < 0.4}
+    for source in graph:
+        fast_turns = g.fewest_turns(graph, source)
+        fast_marked = g.fewest_marked(graph, source, marked)
+        assert set(fast_turns) == set(fast_marked) == set(g.bfs_distances(graph, source))
+        for target in graph:
+            if target == source:
+                continue
+            every = all_routes(graph, source, target)
+            if not every:
+                assert target not in fast_turns
+                continue
+            assert fast_turns[target] == min(g.turns(r) for r in every), (seed, source, target)
+            assert fast_marked[target] == min(sum(c in marked for c in r[1:-1]) for r in every), (
+                seed,
+                source,
+                target,
+            )

@@ -9,7 +9,8 @@ it was made and lets anyone reproduce it byte for byte::
 
 Algorithm, for one seed:
 
-1. Carve a perfect maze on a 25 x 25 room lattice with a seeded recursive
+1. Carve a perfect maze on a 17 x 17 room lattice (a 35 x 35-cell grid)
+   with a seeded recursive
    backtracker (long winding corridors, few dead ends).
 2. Braid it:
    a. remove every dead end by opening one of its walls, preferring a wall
@@ -22,6 +23,8 @@ Algorithm, for one seed:
       middle of the 10-20 % band in FR-G-01.
 3. Place the three exits at fixed cells on the outer ring and run the full
    level validator from ``app.maze``, with the settings in config/game.yaml.
+   That includes the route-complexity rules, so a seed passes only if at
+   least ``start_cell_count`` cells have no straightforward way out.
 
 Seeds are tried in order from ``BASE_SEED``; the first one whose level
 passes every check is used, and recorded in the file. The file holds only
@@ -62,11 +65,11 @@ from app.maze import (
 
 BASE_SEED = 816
 MAX_ATTEMPTS = 500
-ROOMS_X = ROOMS_Y = 25
+ROOMS_X = ROOMS_Y = 17  # 2 * 17 + 1 = 35 cells per side
 TARGET_BRAID_RATIO = 0.15
 # One exit in the middle of the north edge, one low on each of the west and
 # east edges: a wide triangle, so no exit is favoured by the central starts.
-EXIT_CELLS: tuple[Cell, ...] = ((25, 1), (1, 39), (49, 39))
+EXIT_CELLS: tuple[Cell, ...] = ((17, 1), (1, 27), (33, 27))
 LEVEL_NAME = "Labyrinth"
 TOOL_PATH = "game/tools/generate_maze.py"
 
@@ -262,7 +265,8 @@ def main(argv: list[str] | None = None) -> int:
     args.output.write_text(to_json(data), encoding="utf-8")
     print(
         f"wrote {args.output}: seed {data['generator']['seed']}, braid ratio "
-        f"{braid_ratio(level.maze):.2%}, {len(level.start_cells)} start cells"
+        f"{braid_ratio(level.maze):.2%}, {len(level.start_cells)} start cells "
+        f"chosen from {len(level.eligible_start_cells)} eligible"
     )
     return 0
 

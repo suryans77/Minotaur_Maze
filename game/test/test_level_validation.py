@@ -27,7 +27,7 @@ from app.maze import (
     parse_maze,
     validate_level,
 )
-from tools.generate_maze import EXIT_CELLS, Grid, carve_perfect_maze
+from tools.generate_maze import EXIT_CELLS, ROOMS_X, ROOMS_Y, Grid, carve_perfect_maze
 
 
 def violations(data: dict, settings) -> list:
@@ -83,8 +83,8 @@ def test_a_fourth_exit_fails(maze_data, settings):
 
 
 def test_exit_away_from_the_edge_fails(maze_data, settings):
-    set_cells(maze_data, {tuple(maze_data["exits"][0]["cell"]): FLOOR, (25, 25): EXIT})
-    maze_data["exits"][0]["cell"] = [25, 25]
+    set_cells(maze_data, {tuple(maze_data["exits"][0]["cell"]): FLOOR, (13, 13): EXIT})
+    maze_data["exits"][0]["cell"] = [13, 13]
     assert "exit-position" in codes(maze_data, settings)
 
 
@@ -92,9 +92,9 @@ def test_exit_away_from_the_edge_fails(maze_data, settings):
 
 
 def _perfect_maze_data(seed: int = 3) -> dict:
-    """A 25x25 perfect maze (exactly one route between any two cells) with the
-    level's three exits. Not a valid level, but a controlled one."""
-    grid = Grid(25, 25)
+    """A perfect maze (exactly one route between any two cells) the size of the
+    level, with its three exits. Not a valid level, but a controlled one."""
+    grid = Grid(ROOMS_X, ROOMS_Y)
     carve_perfect_maze(grid, random.Random(seed))
     for x, y in EXIT_CELLS:
         grid.rows[y][x] = EXIT
@@ -119,7 +119,10 @@ def _far_cells(level):
 def test_start_with_only_one_route_to_an_exit_is_rejected(settings):
     level = derive_level(parse_maze(_perfect_maze_data()), settings)
     assert level.start_cells == ()  # in a perfect maze no cell qualifies
-    start = _far_cells(level)[0]
+    # A far cell whose one path to each exit avoids the other exits, so every
+    # exit is reachable and the only fault is the missing second route.
+    reach = [g.bfs_distances(level.maze.route_graph(e.id), e.cell) for e in level.maze.exits]
+    start = next(c for c in _far_cells(level) if all(c in r for r in reach))
     for e in level.maze.exits:
         assert len(g.two_distinct_routes(level.maze.route_graph(e.id), start, e.cell)) == 1
     tampered = dataclasses.replace(level, start_cells=(start,))
@@ -230,10 +233,52 @@ def test_empty_start_set_fails(level):
     assert "start-empty" in level_codes(dataclasses.replace(level, start_cells=()))
 
 
-def test_dropping_a_qualifying_start_cell_fails(level):
+def test_dropping_a_chosen_start_cell_fails(level):
     assert level_codes(dataclasses.replace(level, start_cells=level.start_cells[:-1])) == {
-        "start-set-mismatch"
+        "start-set-mismatch",
+        "start-count",
     }
+
+
+def test_swapping_a_chosen_start_for_another_eligible_cell_fails(level):
+    """Any eligible cell would be a fair start, but the set is the one the
+    selection rule picks, so the game and every report agree on it."""
+    spare = next(c for c in level.eligible_start_cells if c not in level.start_cells)
+    swapped = dataclasses.replace(level, start_cells=level.start_cells[:-1] + (spare,))
+    assert level_codes(swapped) == {"start-set-mismatch"}
+
+
+# --- route complexity: no straightforward way out ---------------------------------------
+
+
+def _straightforward_cell(level, table: str, threshold: str):
+    """A cell that meets the distance, safe-zone and two-route rules but has a
+    route to some exit with fewer turns (or junctions) than the threshold."""
+    maze, settings = level.maze, level.settings
+    relaxed = derive_level(maze, dataclasses.replace(settings, min_route_turns=0, min_route_decisions=0))
+    per_exit = getattr(maze, table)
+    return min(
+        c
+        for c in relaxed.eligible_start_cells
+        if min(per_exit[e.id][c] for e in maze.exits) < getattr(settings, threshold)
+    )
+
+
+def test_start_with_a_route_of_too_few_turns_fails(level):
+    cell = _straightforward_cell(level, "route_turns", "min_route_turns")
+    found = messages(_with_start(level, cell), "start-route-turns")
+    assert found and all(m.startswith(f"start cell {list(cell)} has a route to exit") for m in found)
+
+
+def test_start_with_a_route_through_too_few_junctions_fails(level):
+    cell = _straightforward_cell(level, "route_decisions", "min_route_decisions")
+    found = messages(_with_start(level, cell), "start-route-decisions")
+    assert found and all(m.startswith(f"start cell {list(cell)} has a route to exit") for m in found)
+
+
+def test_too_few_eligible_cells_for_the_start_count_fails(level):
+    short = dataclasses.replace(level.settings, start_cell_count=len(level.eligible_start_cells) + 1)
+    assert "start-count" in level_codes(derive_level(level.maze, short))
 
 
 # --- FR-G-05: safe zones --------------------------------------------------------------
@@ -277,9 +322,9 @@ def test_over_braided_maze_fails(level, maze_data, settings):
 
 
 def test_grid_smaller_than_25_by_25_fails(settings):
-    grid = Grid(24, 24)
+    grid = Grid(11, 11)  # 23 x 23 cells
     carve_perfect_maze(grid, random.Random(3))
-    exits = [(23, 1), (1, 37), (47, 37)]
+    exits = [(11, 1), (1, 17), (21, 17)]
     for x, y in exits:
         grid.rows[y][x] = EXIT
     data = {

@@ -1,4 +1,5 @@
-"""Graph algorithms used to validate the level (SRS FR-G-01, FR-G-02, FR-G-05, FR-G-17).
+"""Graph algorithms used to validate the level (SRS FR-G-01, FR-G-02, FR-G-05, FR-G-17),
+plus the two route-complexity measures used to choose start cells.
 
 Graphs are undirected and simple, given as a mapping ``node -> sequence of
 neighbours``. Adjacency must be symmetric. Nodes must be hashable and
@@ -237,3 +238,75 @@ def is_route(graph: Graph[N], route: Sequence[N], source: N, target: N) -> bool:
         and len(set(route)) == len(route)
         and all(b in graph.get(a, ()) for a, b in zip(route, route[1:], strict=False))
     )
+
+
+# --- route complexity ---------------------------------------------------------------
+#
+# Both measures below are minimums over *every* route, not properties of one
+# chosen route: "at least k" means no route at all gets away with fewer. Each
+# is a 0-1 breadth-first search, so it is exact and has no length cutoff.
+#
+# The searches minimise over walks, which may revisit nodes. That gives the
+# same minimum as over routes (simple paths): cutting a loop out of a walk
+# never adds a marked node, and never adds a turn, because a loop that leaves
+# a cell and comes back to it must turn at least once. The brute-force tests
+# in test/test_graph.py check this on random graphs.
+
+
+def turns(route: Sequence[tuple[int, int]]) -> int:
+    """Number of direction changes along a route of grid cells ``(x, y)``."""
+    steps = [(b[0] - a[0], b[1] - a[1]) for a, b in zip(route, route[1:], strict=False)]
+    return sum(1 for a, b in zip(steps, steps[1:], strict=False) if a != b)
+
+
+def fewest_turns(graph: Graph[tuple[int, int]], source: tuple[int, int]) -> dict[tuple[int, int], int]:
+    """For every node reachable from ``source``: the fewest direction changes
+    on any route between the two. Nodes must be grid cells ``(x, y)``; the
+    first step from ``source`` costs nothing. The count is symmetric, so this
+    is also the fewest turns on any route *to* ``source``."""
+    if source not in graph:
+        return {}
+    best_state: dict[tuple[tuple[int, int], tuple[int, int] | None], int] = {(source, None): 0}
+    best: dict[tuple[int, int], int] = {}
+    queue = deque([(0, source, None)])
+    while queue:
+        cost, node, heading = queue.popleft()
+        if cost > best_state[(node, heading)]:
+            continue  # a cheaper copy of this state was already expanded
+        best[node] = min(best.get(node, cost), cost)
+        for nbr in graph[node]:
+            step = (nbr[0] - node[0], nbr[1] - node[1])
+            new = cost + (heading is not None and step != heading)
+            if new < best_state.get((nbr, step), new + 1):
+                best_state[(nbr, step)] = new
+                if new == cost:
+                    queue.appendleft((new, nbr, step))
+                else:
+                    queue.append((new, nbr, step))
+    return best
+
+
+def fewest_marked(graph: Graph[N], source: N, marked: Collection[N]) -> dict[N, int]:
+    """For every node reachable from ``source``: the fewest ``marked`` nodes
+    on any route between the two, counting neither ``source`` nor the node
+    itself (only the nodes passed through on the way)."""
+    if source not in graph:
+        return {}
+    marked = set(marked)
+    entered = {source: 0}  # marked nodes entered after leaving source, endpoint included
+    done: set[N] = set()
+    queue = deque([(0, source)])
+    while queue:
+        cost, node = queue.popleft()
+        if node in done:
+            continue
+        done.add(node)
+        for nbr in graph[node]:
+            new = cost + (nbr in marked)
+            if new < entered.get(nbr, new + 1):
+                entered[nbr] = new
+                if new == cost:
+                    queue.appendleft((new, nbr))
+                else:
+                    queue.append((new, nbr))
+    return {node: k - (node in marked and node != source) for node, k in entered.items()}

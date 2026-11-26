@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Minotaur Maze · maze viewer</title>
+  <link rel="stylesheet" href="viewer.css">
+  <script src="viewer.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <div class="title">
+      <h1 id="maze-name">Maze viewer</h1>
+      <p id="maze-meta" class="meta">Loading levels/maze.json…</p>
+    </div>
+
+    <ul class="legend" aria-label="Legend">
+      <li><span class="swatch wall" aria-hidden="true"></span>Wall</li>
+      <li><span class="swatch floor" aria-hidden="true"></span>Walkable</li>
+      <li><span class="swatch exit" aria-hidden="true"></span>Exit (labelled with its id)</li>
+      <li id="legend-start"><span class="swatch start" aria-hidden="true"></span>Start cell</li>
+    </ul>
+
+    <div class="controls" role="group" aria-label="View">
+      <button id="zoom-out" type="button" title="Zoom out (−)" aria-label="Zoom out" disabled>−</button>
+      <output id="zoom-level" aria-live="polite" aria-label="Zoom level"></output>
+      <button id="zoom-in" type="button" title="Zoom in (+)" aria-label="Zoom in" disabled>+</button>
+      <button id="reset-view" type="button" title="Fit the whole maze to the window (0)" disabled>Reset view</button>
+      <label class="toggle" title="Show or hide the valid start cells (S)">
+        <input id="show-starts" type="checkbox" checked disabled> Start cells
+      </label>
+    </div>
+  </header>
+
+  <main id="viewport" class="viewport" tabindex="0" aria-label="Maze view">
+    <canvas id="maze" role="img" aria-label="Maze" hidden></canvas>
+
+    <section id="notice" class="notice" hidden>
+      <h2>Could not load the maze</h2>
+      <ul id="notice-problems"></ul>
+      <p>
+        The viewer reads <code>levels/maze.json</code> over HTTP. Start its
+        server from the repository root:
+      </p>
+      <pre><code>cd game &amp;&amp; uv run python ../frontend/maze-viewer/serve.py</code></pre>
+      <p>then <code>http://localhost:8000/frontend/maze-viewer/</code>. Or open a maze file directly:</p>
+      <input id="file-input" type="file" accept=".json,application/json">
+    </section>
+  </main>
+
+  <footer class="status">
+    <span id="hover">Hover over a cell to see its [x, y]</span>
+    <span id="start-note" hidden></span>
+    <span id="exit-list"></span>
+  </footer>
+</body>
+</html>

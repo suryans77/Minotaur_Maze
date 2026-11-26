@@ -21,7 +21,7 @@ services:
       xpack.security.enabled: "true"
       xpack.security.http.ssl.enabled: "false"
       # SRS §7.1: 1 GB heap inside a 1.5 GB allocation.
-      ES_JAVA_OPTS: -Xms1g -Xmx1g
+      ES_JAVA_OPTS: -Xms768m -Xmx768m
       # Bootstrap password for the built-in `elastic` superuser. Only applied
       # when the data volume is first initialised.
       ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD must be set in .env}

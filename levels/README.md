@@ -6,23 +6,27 @@ each the only source of truth for what it holds:
 | File | Holds | Changes when |
 |---|---|---|
 | [`levels/maze.json`](maze.json) | Static topology: the grid and the three exit coordinates | The maze itself is redesigned |
-| [`config/game.yaml`](../config/game.yaml), section `level` | Tunable settings: `safe_zone_radius`, `min_start_distance` | Balance is tuned (SRS §3.2) |
+| [`config/game.yaml`](../config/game.yaml), section `level` | Tunable settings: `safe_zone_radius`, `min_start_distance`, `min_route_turns`, `min_route_decisions`, `start_cell_count` | Balance is tuned (SRS §3.2) |
 
-**Safe zones** and **valid start cells** appear in neither file. They are
+**Safe zones** and **start cells** appear in neither file. They are
 derived from the two every time the level is loaded, so they can never fall
 out of step with the maze or with the settings. The maze loader rejects a
 maze file that tries to carry settings, safe zones or start cells.
 
-Current level, with the committed settings (radius 2, minimum distance 12):
+Current level, with the committed settings (safe-zone radius 2; every route
+from a start at least 20 moves, 10 turns and 5 junctions; 10 start cells):
 
 | | |
 |---|---|
-| Grid | 51 × 51 cells, a 25 × 25 room lattice |
-| Exits | 3, at `[25, 1]` (north), `[1, 39]` (west), `[49, 39]` (east) |
-| Braid ratio | 15.10 % (87 of 576 walls removed) |
-| Safe zones | 5 cells per exit |
-| Valid start cells | 1,199 |
-| Generator seed | 816 |
+| Grid | 35 × 35 cells, a 17 × 17 room lattice |
+| Exits | 3, at `[17, 1]` (north), `[1, 27]` (west), `[33, 27]` (east) |
+| Braid ratio | 15.23 % (39 of 256 walls removed) |
+| Safe zones | 5, 7 and 5 cells |
+| Junctions | 71 of 616 walkable cells |
+| Eligible start cells | 37 |
+| Start cells | 10, labelled A–J in the viewer |
+| Easiest way out of any start | at least 31 moves, 10 turns and 5 junctions |
+| Generator seed | 818 |
 
 Validate it from `game/`:
 
@@ -31,6 +35,9 @@ uv run python -m app.maze                      # prints the measured properties;
 uv run python -m app.maze --config other.yaml  # the same maze under other settings
 uv run pytest test/test_level.py test/test_level_validation.py test/test_settings.py
 ```
+
+To see it, with the start cells marked, run the maze viewer:
+[`frontend/maze-viewer/`](../frontend/maze-viewer/README.md).
 
 ## `levels/maze.json` format
 
@@ -68,15 +75,15 @@ are no diagonal moves. Every distance and route below is measured on this
 
 The grid is a **room lattice**, which is what makes "walls removed" countable:
 
-- **Rooms** are at cells where `x` and `y` are both odd. There are 25 × 25 of
+- **Rooms** are at cells where `x` and `y` are both odd. There are 17 × 17 of
   them, and they are always walkable.
 - **Pillars** are at cells where `x` and `y` are both even. They and the
   outer border are always wall.
 - **Wall slots** are every other interior cell. Each sits between two
   orthogonally adjacent rooms and is either a wall (`#`) or opened (`.`).
 
-An **exit** is a room on the outermost ring of rooms (`x` = 1 or 49, or
-`y` = 1 or 49), marked `E` and listed in `exits`. The border wall beside it is
+An **exit** is a room on the outermost ring of rooms (`x` = 1 or 33, or
+`y` = 1 or 33), marked `E` and listed in `exits`. The border wall beside it is
 kept intact, so the exit is a cell the player steps onto, not a hole in the
 map.
 
@@ -105,9 +112,11 @@ algorithms are in [`game/app/graph.py`](../game/app/graph.py).
 
 ### Size: FR-G-01, at least 25 × 25
 
-The room lattice must be at least 25 × 25. That also makes the cell grid at
-least 51 × 51, so the level meets "at least 25 × 25" whichever of the two the
-SRS means.
+The grid must be at least 25 × 25 **cells**, which is how this level reads
+FR-G-01's "a grid of at least 25×25". The level is 35 × 35 cells, a
+17 × 17 room lattice. (The floor used to be a 25 × 25 room lattice, a
+51 × 51-cell grid, which met the requirement under either reading. The team
+chose a smaller maze.)
 
 ### Braid ratio: FR-G-01, 10–20 % of walls removed
 
@@ -121,8 +130,8 @@ braid ratio = (O − (R − 1)) / (S − (R − 1))
             = walls removed beyond a perfect maze / walls a perfect maze has
 ```
 
-Here `S = 1200` and `R = 625`, so a perfect maze has 576 walls. This level
-opens `O = 711` slots, which removes 87 of them: **15.10 %**. The ratio is
+Here `S = 544` and `R = 289`, so a perfect maze has 256 walls. This level
+opens `O = 327` slots, which removes 39 of them: **15.23 %**. The ratio is
 computed from the grid alone. It doesn't matter how the level was made. It
 is 0 for a perfect maze and 1 when every slot is open, and both endpoints
 are tested.
@@ -138,8 +147,9 @@ Every distance is the **shortest walkable path**, counted in moves,
 computed by breadth-first search from each exit over the full walkable
 graph. That is how far the player actually has to travel, which is why it
 was chosen over straight-line distance. Because walls force detours, some
-start cells are closer than 12 as the crow flies, and a test asserts that
-this happens. The other exits are not blocked when measuring distance.
+start cells are closer than `min_start_distance` as the crow flies, and a
+test asserts that this happens. Start I, `[30, 23]`, is 7 cells from exit 2
+in a straight line but 45 moves away on foot. The other exits are not blocked when measuring distance.
 Blocking them could only make distances longer, so this is the stricter of
 the two choices for a minimum distance.
 
@@ -213,20 +223,65 @@ How it is decided, exactly and with no length cutoff:
   start set. On small random graphs, both methods are also compared with
   brute-force enumeration of every simple path.
 
-### Valid start cells: FR-G-17, derived
+### Route complexity: no straightforward way out
 
-A cell is a valid start when all of these hold:
+FR-G-17's distance rule alone lets in starts with an easy way out: in a
+braid maze, loops often offer a long but nearly straight run to an exit. So
+the team added two measures, each a minimum over **every** route under the
+endpoint rule, not over one chosen route:
+
+- **Turns**: the number of direction changes along a route. The fewest
+  turns of any route to an exit must be at least `min_route_turns`.
+- **Decisions**: junctions passed on the way. A junction is a walkable cell
+  with three or more walkable neighbours, where the player has to choose. The
+  start and the exit themselves don't count. The fewest junctions of any
+  route to an exit must be at least `min_route_decisions`.
+
+Both are exact 0-1 breadth-first searches in
+[`game/app/graph.py`](../game/app/graph.py) (`fewest_turns`,
+`fewest_marked`), with no length cutoff. They minimise over walks. That gives
+the same answer as over simple paths, because cutting a loop out of a walk
+never adds a junction and never adds a turn: a loop must turn at least once
+to come back. How they are tested:
+
+- On small random grid graphs, both are compared with brute-force
+  enumeration of every simple path.
+- On the level, the turns are recomputed by a different algorithm, a
+  breadth-first search over straight runs.
+- The junctions are recomputed by a heap-based search from the start side.
+
+With the committed thresholds, turns do the real filtering. Of the 348
+cells that meet the other rules, 37 need 10 or more turns, and every one of
+those also passes 5 or more junctions. The junction rule is still checked,
+so a regenerated maze cannot slip through on turns alone.
+
+### Start cells: FR-G-17, derived
+
+A cell is **eligible** when all of these hold:
 
 1. it is walkable, is not an exit, and is not in any safe zone;
 2. its distance (as above) to every exit is at least `min_start_distance`;
 3. it has at least two distinct routes to every exit under the endpoint
-   rule.
+   rule;
+4. every route to every exit makes at least `min_route_turns` turns and
+   passes at least `min_route_decisions` junctions.
 
-The start set is exactly the cells that qualify, sorted by row then column.
-With the committed settings that is 1,199 cells. Every cell at least 12
-moves from all three exits also has two distinct routes to each, so rule 3
-excludes nothing here, but it is still checked. The game will pick one at
-random each game (FR-G-17, later phase).
+With the committed settings, 37 cells are eligible. The game uses
+`start_cell_count` (10) of them, chosen to be spread across the maze by
+**farthest-point selection** on walking distance:
+
+- It starts with the cell whose easiest way out is hardest (most turns,
+  then most junctions, then farthest).
+- Then it repeatedly adds the eligible cell farthest from every cell chosen
+  so far.
+- Ties go to the more complex cell, then to row-major order.
+
+So the set is deterministic, and every eligible cell left out is no farther
+from a chosen start than the chosen starts are from each other (a test
+checks this). The start cells are listed by row, then column; the viewer
+labels them A–J in that order. The game will pick one at random each game
+(FR-G-17, later phase). If fewer than `start_cell_count` cells are eligible,
+the level is rejected (`start-count`).
 
 ## Regenerating
 
@@ -247,8 +302,9 @@ any articulation point remains, it opens a wall between two rooms that share
 no biconnected component. Last, it opens random walls until the ratio
 reaches 15 %, the middle of the band. It places the exits and keeps the
 first seed from 816 upward whose level, derived with the settings in
-`config/game.yaml`, passes the full validator. Seed 816 passes on the first
-try.
+`config/game.yaml`, passes the full validator, including the route-complexity
+rules. Seed 818 is the first to pass. Seeds 816 and 817 make valid mazes,
+but fewer than 10 of their cells have no straightforward way out.
 
 `--check` uses only the recorded seed, not the settings, so changing a
 setting never makes it fail. If a settings change makes the current maze

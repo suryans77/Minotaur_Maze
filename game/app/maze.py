@@ -5,10 +5,12 @@ Two sources, one owner per fact:
 * ``levels/maze.json``: the static topology, meaning the grid and the exit
   coordinates. Documented in ``levels/README.md``.
 * ``config/game.yaml``, section ``level``: the tunable settings
-  ``safe_zone_radius`` and ``min_start_distance``.
+  ``safe_zone_radius``, ``min_start_distance``, ``min_route_turns``,
+  ``min_route_decisions`` and ``start_cell_count``.
 
-Everything else (safe zones, valid start cells) is derived from those two
-on load and is never stored, so it cannot fall out of step with either.
+Everything else (safe zones, eligible and chosen start cells) is derived from
+those two on load and is never stored, so it cannot fall out of step with
+either.
 
 Conventions:
 
@@ -24,13 +26,17 @@ Conventions:
 Requirement checks (SRS v2, with the team's endpoint rule for FR-G-02):
 
 ==========  ===============================================================
-FR-G-01     room lattice at least 25 x 25; braid ratio within 10-20 %
+FR-G-01     grid at least 25 x 25 cells; braid ratio within 10-20 %
 FR-G-02     at least 2 distinct routes from every start to every exit, with
             the other exits blocked (exits are terminal endpoints)
 FR-G-03     exactly 3 exits
 FR-G-05     safe zone of ``safe_zone_radius`` (SRS: 2) around every exit
 FR-G-17     start cells at least ``min_start_distance`` (SRS: 12) moves, by
             shortest walkable path, from every exit
+Team rule   every route from a start cell to every exit makes at least
+            ``min_route_turns`` turns and passes at least
+            ``min_route_decisions`` junctions; exactly ``start_cell_count``
+            start cells, spread out across the maze
 ==========  ===============================================================
 
 Run ``python -m app.maze`` from ``game/`` to load and validate the level and
@@ -42,7 +48,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -59,13 +65,15 @@ MAZE_FIELDS = frozenset(
     {"format_version", "name", "coordinates", "legend", "generator", "width", "height", "exits", "grid"}
 )
 SETTINGS_SECTION = "level"
-SETTINGS_FIELDS = frozenset({"safe_zone_radius", "min_start_distance"})
+SETTINGS_FIELDS = frozenset(
+    {"safe_zone_radius", "min_start_distance", "min_route_turns", "min_route_decisions", "start_cell_count"}
+)
 WALL, FLOOR, EXIT = "#", ".", "E"
 GRID_CHARS = frozenset({WALL, FLOOR, EXIT})
 DIRECTIONS: tuple[Cell, ...] = ((0, -1), (1, 0), (0, 1), (-1, 0))  # N, E, S, W
 
 # Requirement values from SRS v2. A level that does not meet them is invalid.
-MIN_ROOMS_PER_SIDE = 25  # FR-G-01: "a grid of at least 25x25"
+MIN_GRID_SIDE = 25  # FR-G-01: "a grid of at least 25x25", counted in cells
 BRAID_RATIO_MIN = 0.10  # FR-G-01: "10-20% of walls removed"
 BRAID_RATIO_MAX = 0.20
 EXIT_COUNT = 3  # FR-G-03
@@ -112,6 +120,9 @@ class Exit:
 class LevelSettings:
     safe_zone_radius: int
     min_start_distance: int
+    min_route_turns: int
+    min_route_decisions: int
+    start_cell_count: int
 
 
 @dataclass(frozen=True)
@@ -192,6 +203,25 @@ class Maze:
         others = [e.cell for e in self.exits if e.id != exit_id]
         return g.induced_subgraph(self.graph, others)
 
+    @cached_property
+    def junctions(self) -> frozenset[Cell]:
+        """Decision points: walkable cells with three or more walkable neighbours,
+        where a player arriving along one corridor has to choose between two others."""
+        return frozenset(c for c, nbrs in self.graph.items() if len(nbrs) >= 3)
+
+    @cached_property
+    def route_turns(self) -> dict[int, dict[Cell, int]]:
+        """Per exit id: the fewest turns any route from each cell to that exit
+        makes, under the endpoint rule (other exits blocked)."""
+        return {e.id: g.fewest_turns(self.route_graph(e.id), e.cell) for e in self.exits}
+
+    @cached_property
+    def route_decisions(self) -> dict[int, dict[Cell, int]]:
+        """Per exit id: the fewest junctions any route from each cell to that
+        exit passes through (not counting the start or the exit), under the
+        endpoint rule."""
+        return {e.id: g.fewest_marked(self.route_graph(e.id), e.cell, self.junctions) for e in self.exits}
+
 
 @dataclass(frozen=True)
 class Level:
@@ -201,6 +231,7 @@ class Level:
     settings: LevelSettings
     safe_zones: Mapping[int, frozenset[Cell]]
     start_cells: tuple[Cell, ...]
+    eligible_start_cells: tuple[Cell, ...] = ()
 
     @property
     def all_safe_cells(self) -> frozenset[Cell]:
@@ -316,10 +347,7 @@ def parse_settings(config: Any) -> LevelSettings:
     for key in sorted(SETTINGS_FIELDS):
         if not _is_int(section[key]) or section[key] < 0:
             raise SettingsError(f"{SETTINGS_SECTION}.{key} must be a non-negative integer")
-    return LevelSettings(
-        safe_zone_radius=section["safe_zone_radius"],
-        min_start_distance=section["min_start_distance"],
-    )
+    return LevelSettings(**{key: section[key] for key in SETTINGS_FIELDS})
 
 
 def load_settings(path: Path | str = DEFAULT_CONFIG_PATH) -> LevelSettings:
@@ -386,15 +414,33 @@ def route_reach(maze: Maze, exit_id: int) -> tuple[frozenset[Cell], frozenset[Ce
     return reach, frozenset(g.nodes_with_two_routes(graph, exit_cell))
 
 
-def derive_start_cells(
+def _row_major(cell: Cell) -> tuple[int, int]:
+    return (cell[1], cell[0])
+
+
+def route_complexity(maze: Maze, cell: Cell) -> tuple[int, int, int]:
+    """How hard the easiest way out of ``cell`` is: over all three exits, the
+    fewest turns, the fewest junctions and the shortest distance of any route.
+    Cells that cannot reach an exit score -1."""
+    return (
+        min(maze.route_turns[e.id].get(cell, -1) for e in maze.exits),
+        min(maze.route_decisions[e.id].get(cell, -1) for e in maze.exits),
+        min(maze.exit_distances[e.id].get(cell, -1) for e in maze.exits),
+    )
+
+
+def derive_eligible_start_cells(
     maze: Maze, settings: LevelSettings, safe_zones: Mapping[int, frozenset[Cell]]
 ) -> tuple[Cell, ...]:
-    """Every cell that qualifies as a start cell, sorted by (y, x).
+    """Every cell that may be a start cell, sorted by (y, x).
 
-    A start cell is walkable, is not an exit and not in any safe zone, is at
-    least ``min_start_distance`` moves from every exit by shortest walkable
-    path, and has at least two distinct routes to every exit under the
-    endpoint rule.
+    An eligible cell is walkable, is not an exit and not in any safe zone, and
+    for every exit:
+
+    * is at least ``min_start_distance`` moves away by shortest walkable path;
+    * has at least two distinct routes to it under the endpoint rule;
+    * has no route to it with fewer than ``min_route_turns`` turns or fewer
+      than ``min_route_decisions`` junctions, so no way out is straightforward.
     """
     excluded = set(maze.exit_cells).union(*safe_zones.values())
     two_routes = [route_reach(maze, e.id)[1] for e in maze.exits]
@@ -403,19 +449,59 @@ def derive_start_cells(
         for cell in maze.walkable - excluded
         if all(maze.exit_distances[e.id].get(cell, -1) >= settings.min_start_distance for e in maze.exits)
         and all(cell in ok for ok in two_routes)
+        and all(maze.route_turns[e.id].get(cell, -1) >= settings.min_route_turns for e in maze.exits)
+        and all(maze.route_decisions[e.id].get(cell, -1) >= settings.min_route_decisions for e in maze.exits)
     ]
-    return tuple(sorted(candidates, key=lambda c: (c[1], c[0])))
+    return tuple(sorted(candidates, key=_row_major))
+
+
+def select_start_cells(maze: Maze, eligible: Sequence[Cell], count: int) -> tuple[Cell, ...]:
+    """Choose ``count`` of the eligible cells, spread across the maze, sorted by (y, x).
+
+    Farthest-point selection by walking distance: first the cell whose
+    easiest way out is hardest (``route_complexity``), then repeatedly the
+    cell farthest from every cell chosen so far. Ties go to the more complex
+    cell, then to the first in row-major order, so the choice is
+    deterministic. If fewer than ``count`` cells are eligible, all of them
+    are returned (and ``validate_level`` reports the shortfall).
+    """
+    order = sorted(eligible, key=_row_major)
+    if count <= 0:
+        return ()
+    if len(order) <= count:
+        return tuple(order)
+    complexity = {c: route_complexity(maze, c) for c in order}
+    chosen = [max(order, key=lambda c: complexity[c])]  # max() keeps the first of equals
+    nearest = g.bfs_distances(maze.graph, chosen[0])
+    gap = {c: nearest[c] for c in order}
+    while len(chosen) < count:
+        nxt = max((c for c in order if c not in chosen), key=lambda c: (gap[c], complexity[c]))
+        chosen.append(nxt)
+        dist = g.bfs_distances(maze.graph, nxt)
+        for c in order:
+            gap[c] = min(gap[c], dist[c])
+    return tuple(sorted(chosen, key=_row_major))
+
+
+def derive_start_cells(
+    maze: Maze, settings: LevelSettings, safe_zones: Mapping[int, frozenset[Cell]]
+) -> tuple[Cell, ...]:
+    """The ``start_cell_count`` start cells the game picks from (FR-G-17)."""
+    eligible = derive_eligible_start_cells(maze, settings, safe_zones)
+    return select_start_cells(maze, eligible, settings.start_cell_count)
 
 
 def derive_level(maze: Maze, settings: LevelSettings) -> Level:
     """The level for this maze and these settings. Never raises for a parsed
     maze; whether the result is acceptable is ``validate_level``'s job."""
     safe_zones = derive_safe_zones(maze, settings)
+    eligible = derive_eligible_start_cells(maze, settings, safe_zones)
     return Level(
         maze=maze,
         settings=settings,
         safe_zones=safe_zones,
-        start_cells=derive_start_cells(maze, settings, safe_zones),
+        start_cells=select_start_cells(maze, eligible, settings.start_cell_count),
+        eligible_start_cells=eligible,
     )
 
 
@@ -434,11 +520,10 @@ def validate_level(level: Level) -> list[Violation]:
     if maze.width % 2 == 0 or maze.height % 2 == 0:
         fail("grid-structure", f"width and height must be odd, got {maze.width}x{maze.height}")
         return out
-    if maze.rooms_x < MIN_ROOMS_PER_SIDE or maze.rooms_y < MIN_ROOMS_PER_SIDE:
+    if maze.width < MIN_GRID_SIDE or maze.height < MIN_GRID_SIDE:
         fail(
             "grid-size",
-            f"room lattice is {maze.rooms_x}x{maze.rooms_y}, "
-            f"needs at least {MIN_ROOMS_PER_SIDE}x{MIN_ROOMS_PER_SIDE}",
+            f"grid is {maze.width}x{maze.height} cells, needs at least {MIN_GRID_SIDE}x{MIN_GRID_SIDE}",
         )
     for cell in maze.cells():
         if (maze.is_border(cell) or maze.is_pillar(cell)) and maze.char(cell) != WALL:
@@ -492,6 +577,8 @@ def validate_level(level: Level) -> list[Violation]:
             f"min_start_distance is {settings.min_start_distance}, "
             f"SRS FR-G-17 requires >= {SRS_MIN_START_DISTANCE}",
         )
+    if settings.start_cell_count < 1:
+        fail("settings", "start_cell_count must be at least 1")
 
     # FR-G-05: safe zones, and they must not break the maze for either side.
     expected_zones = derive_safe_zones(maze, settings)
@@ -521,6 +608,12 @@ def validate_level(level: Level) -> list[Violation]:
     # FR-G-17 and FR-G-02: start cells.
     if not level.start_cells:
         fail("start-empty", "no valid start cells")
+    elif len(level.start_cells) != settings.start_cell_count:
+        fail(
+            "start-count",
+            f"{len(level.start_cells)} start cells, start_cell_count requires exactly "
+            f"{settings.start_cell_count}; too few cells meet the start rules",
+        )
     if len(set(level.start_cells)) != len(level.start_cells):
         fail("start-duplicate", "start_cells contains duplicates")
     safe = level.all_safe_cells
@@ -551,13 +644,28 @@ def validate_level(level: Level) -> list[Violation]:
                     f"{where} has only one route to exit {e.id} that avoids the other exits, "
                     f"needs at least {MIN_ROUTES} distinct routes",
                 )
+            if cell in reach:
+                turns = maze.route_turns[e.id][cell]
+                if turns < settings.min_route_turns:
+                    fail(
+                        "start-route-turns",
+                        f"{where} has a route to exit {e.id} with only {turns} turns, "
+                        f"every route needs >= {settings.min_route_turns}",
+                    )
+                decisions = maze.route_decisions[e.id][cell]
+                if decisions < settings.min_route_decisions:
+                    fail(
+                        "start-route-decisions",
+                        f"{where} has a route to exit {e.id} through only {decisions} junctions, "
+                        f"every route needs >= {settings.min_route_decisions}",
+                    )
 
     derived = set(derive_start_cells(maze, settings, level.safe_zones))
     stored = set(level.start_cells)
     if derived != stored:
         fail(
             "start-set-mismatch",
-            f"start_cells must be exactly the {len(derived)} qualifying cells: "
+            f"start_cells must be the {len(derived)} cells chosen from the eligible ones: "
             f"{len(derived - stored)} missing, {len(stored - derived)} extra",
         )
     return out
@@ -566,11 +674,11 @@ def validate_level(level: Level) -> list[Violation]:
 def summary(level: Level) -> dict[str, Any]:
     """Measured properties of the level, for reports and the CLI."""
     maze = level.maze
-    min_dist = (
-        min(maze.exit_distances[e.id][c] for e in maze.exits for c in level.start_cells)
-        if level.start_cells
-        else None
-    )
+
+    def lowest(table: dict[int, dict[Cell, int]]) -> int | None:
+        values = [table[e.id][c] for e in maze.exits for c in level.start_cells if c in table[e.id]]
+        return min(values) if values else None
+
     return {
         "name": maze.name,
         "grid": f"{maze.width}x{maze.height} cells",
@@ -578,13 +686,16 @@ def summary(level: Level) -> dict[str, Any]:
         "walkable_cells": len(maze.walkable),
         "exits": {e.id: list(e.cell) for e in maze.exits},
         "braid_ratio": round(braid_ratio(maze), 4),
-        "settings": {
-            "safe_zone_radius": level.settings.safe_zone_radius,
-            "min_start_distance": level.settings.min_start_distance,
-        },
+        "junctions": len(maze.junctions),
+        "settings": {key: getattr(level.settings, key) for key in sorted(SETTINGS_FIELDS)},
         "safe_zone_sizes": {k: len(v) for k, v in sorted(level.safe_zones.items())},
-        "start_cells": len(level.start_cells),
-        "min_start_to_exit_distance": min_dist,
+        "eligible_start_cells": len(level.eligible_start_cells),
+        "start_cells": [list(c) for c in level.start_cells],
+        "over_all_starts_and_exits": {
+            "min_distance": lowest(maze.exit_distances),
+            "min_route_turns": lowest(maze.route_turns),
+            "min_route_decisions": lowest(maze.route_decisions),
+        },
     }
 
 
@@ -599,7 +710,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"INVALID: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(summary(level), indent=2))
-    print("OK: level satisfies FR-G-01, FR-G-02, FR-G-03, FR-G-05 and FR-G-17")
+    print("OK: level satisfies FR-G-01, FR-G-02, FR-G-03, FR-G-05, FR-G-17 and the route-complexity rules")
     return 0
 
 
