@@ -1,0 +1,16 @@
+# Game balance settings (SRS §3.2). The single source of truth for every
+# tunable value; baked into the game image at build time (FR-D-24).
+#
+# Only settings that code reads today are listed. The rest of SRS §3.2
+# (Minotaur speed, sight range, hearing radius, running speed) is added in
+# the phase that implements it.
+
+# Read by game/app/maze.py. Safe zones and valid start cells are derived
+# from these values and levels/maze.json every time the level is loaded.
+level:
+  # Cells, by shortest walkable path, around each exit that the Minotaur may
+  # not enter (FR-G-05). Includes the exit itself. Must be >= 2.
+  safe_zone_radius: 2
+  # Minimum shortest-walkable-path distance, in moves, from a start cell to
+  # every exit (FR-G-17). Must be >= 12.
+  min_start_distance: 12
