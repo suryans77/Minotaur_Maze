@@ -2,3 +2,28 @@
 .env
 .env.*
 !.env.example
+
+# Ansible Vault password files: the vault password is never committed (FR-D-22).
+.vault_pass*
+*.vault_pass
+vault_password*
+
+# Python: bytecode, virtual environments, tool caches, packaging metadata.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+
+# Editors and operating systems.
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

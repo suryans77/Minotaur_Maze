@@ -11,7 +11,7 @@ Requirement IDs are never renumbered. A requirement that was removed keeps its I
 | ID | v1 | v2 | Why |
 |---|---|---|---|
 | FR-G-01 | 5 fixed levels | 1 fixed level, randomised start position each game | No mark counts levels. A randomised start restores variety without a second maze file and stops classmates memorising routes, which would break balance mid-demo |
-| FR-G-03 | 3–4 exits | Exactly 3 exits | Keeps the exit-prediction baseline at a constant 33%, so accuracy is comparable across every model version. Also makes the two-disjoint-routes constraint easy to satisfy |
+| FR-G-03 | 3–4 exits | Exactly 3 exits | Keeps the exit-prediction baseline at a constant 33%, so accuracy is comparable across every model version. Also makes the two-routes constraint (FR-G-02) easy to satisfy |
 | FR-G-10 | Smoke bomb | **Removed** | One more rule to test and balance, worth no marks |
 | FR-G-16 | Leaderboard | **Removed** | Worth no marks and the only reason Redis needed persistence |
 | FR-M-02 | Belief map from move-predictor rollout | Interception point on the route from last known position to the predicted exit | The hardest ML in v1 and worth nothing beyond the exit predictor. Interception is hand-written and uses the surviving model |
@@ -29,6 +29,7 @@ Requirement IDs are never renumbered. A requirement that was removed keeps its I
 | 6.2 step 7 | Trivy fails the build on critical CVEs | Trivy reports, does not block | Base images acquire new criticals through no fault of ours, which would turn the pipeline red on demo day. gitleaks stays blocking because it is deterministic |
 | NFR-01, NFR-03 | 200 concurrent games | 40 concurrent games | What is marked is that pods scale and latency recovers, not the number. 200 is not achievable alongside Minikube, Jenkins and ELK on 16 GB |
 | FR-D-06 | Elasticsearch heap 2 GB | Elasticsearch heap 1 GB, Logstash 512 MB | See the RAM budget in Section 7 |
+| FR-G-02 | At least two disjoint routes from every start cell to every exit | At least two *distinct simple* routes, which may share intermediate cells; a route ends at its destination exit and never passes through another exit | Team decision during Phase 0, implemented in the level validator (`game/app/maze.py`) and defined in `levels/README.md`. Routes need only differ, not be vertex-disjoint; exits are terminal endpoints, so a route through another exit does not count |
 
 ### Added in v2
 
@@ -127,7 +128,7 @@ The game is one grid maze in which the player must reach the single active exit 
 | ID | Requirement | Acceptance criterion |
 |---|---|---|
 | FR-G-01 | The system shall provide one fixed level: a braid maze on a grid of at least 25×25 with 10–20% of walls removed | The level loads from a versioned file in the repo |
-| FR-G-02 | Every exit shall be reachable from every valid start cell by at least two disjoint routes | Automated test passes |
+| FR-G-02 | Every exit shall be reachable from every valid start cell by at least two distinct simple routes. A route is a sequence of orthogonal moves through walkable cells that visits no cell twice. It terminates at its destination exit, the first time it reaches it, and never passes through either of the other two exits. Two routes are distinct if their cell sequences differ; they may share intermediate cells | The level-validation test passes: for every valid start cell and each of the 3 exits, with the other two exits treated as blocked, at least two distinct simple routes ending at that exit are found. A start cell with only one such route, or none, to any exit is rejected |
 | FR-G-03 | The level shall have exactly 3 exits; one is chosen at random as active at game start | The active exit varies across 100 games |
 | FR-G-04 | The active exit shall be shown to the player and never sent to the Minotaur service | Minotaur API request schema has no active-exit field |
 | FR-G-05 | Every exit shall have a safe zone of 2 cells the Minotaur cannot enter | Movement test rejects Minotaur moves into any safe zone |
@@ -323,7 +324,7 @@ Neither tool is graded; CR-02 grades the webhook trigger itself. One real differ
 2. Secret scan with gitleaks. **The build fails on any finding** — this is the stage deliberately failed during the demo.
 3. Build the game and frontend assets.
 4. Unit tests with pytest: game rules, line of sight, noise, safe zones, end states, feature extraction. The build fails on any failure.
-5. Level validation: every exit reachable from every valid start cell by two disjoint routes; braid ratio within 10–20%.
+5. Level validation: every exit reachable from every valid start cell by at least two distinct simple routes that end at that exit and pass through no other exit (FR-G-02); braid ratio within 10–20%.
 6. **Fun check, only when `config/game.yaml` changed** (FR-D-23): 30 bot games, build fails if catch rate leaves the 40–60% band.
 7. Integration test: start the stack with Docker Compose, let the four sim bots each play a game to completion, then tear down.
 8. Docker build of every changed service, tagged `<service>:<build>`, with `config/game.yaml` baked in (FR-D-24).
@@ -497,7 +498,7 @@ The project is accepted when every row of Section 9 can be shown live in one run
 | Level | Tool | What it covers | Runs in |
 |---|---|---|---|
 | Unit | pytest | Movement, line of sight, noise, safe zones, end states, feature extraction, interception geometry | App pipeline |
-| Level validation | pytest | Every exit reachable from every valid start cell by two disjoint routes; braid ratio within 10–20% | App pipeline |
+| Level validation | pytest | Every exit reachable from every valid start cell by at least two distinct simple routes that end at that exit and pass through no other exit (FR-G-02); braid ratio within 10–20% | App pipeline |
 | Config fun check | Python | 30 bot games when `config/game.yaml` changes; catch rate must stay in band | App pipeline, conditional |
 | Integration | Docker Compose + sim bots | Four bots each finish a game against the real services | App pipeline |
 | Model gates | Python | Quality gate with baseline, fun gate, latency gate; plus the ablation and the settings sweep run manually | Model pipeline |

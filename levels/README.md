@@ -187,9 +187,8 @@ Every valid start cell must have **at least two distinct routes to each of
 the three exits**. A start with only one route to any exit, or no route at
 all, is rejected.
 
-> SRS FR-G-02 reads "two disjoint routes". The team has decided on the
-> distinct-route definition above. The SRS text should be updated to match
-> (see the Build Plan: contracts change together with the SRS).
+> This is the wording of SRS FR-G-02 in `docs/SRS.md`, which replaced the
+> earlier "two disjoint routes" (see the SRS change table).
 
 How it is decided, exactly and with no length cutoff:
 
